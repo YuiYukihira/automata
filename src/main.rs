@@ -1,31 +1,73 @@
-use std::ops::Deref;
+use std::{
+    cell::{Cell, RefCell},
+    ops::Deref,
+    sync::Arc,
+};
 
-use bevy::{prelude::*, tasks::ComputeTaskPool};
-use rand::random;
+use bevy::{prelude::*, tasks::ComputeTaskPool, utils::HashMap};
 
-static SCREEN_CELLS: (usize, usize) = (256, 256);
-static SCREEN_CELLS_FLOAT: (f32, f32) = (256.0, 256.0);
+static SCREEN_CELLS: (usize, usize) = (16, 16);
+static SCREEN_CELLS_FLOAT: (f32, f32) = (16.0, 16.0);
 
-#[derive(Component, Deref)]
-struct Velocity(Vec2);
-
-#[derive(Component, Deref)]
-struct Cell(Vec2);
+#[derive(Component, Deref, PartialEq)]
+struct BoardPosition(IVec2);
 
 #[derive(Component, Deref)]
 struct Alive(bool);
 
-fn cell_to_pos(window: &Vec4, grid_size: &Vec2, cell: &Cell) -> Vec2 {
+#[derive(Component, Deref)]
+struct NextAlive(bool);
+
+#[derive(Deref, DerefMut)]
+struct CellTimer(Timer);
+
+#[derive(Debug)]
+struct Board {
+    forward: Vec<Option<Entity>>,
+    backward: HashMap<Entity, usize>,
+    width: usize,
+    height: usize,
+}
+
+impl Board {
+    fn new(width: usize, height: usize) -> Self {
+        Self {
+            forward: vec![None; width * height],
+            backward: HashMap::new(),
+            width,
+            height,
+        }
+    }
+    fn get(&self, x: usize, y: usize) -> &Option<Entity> {
+        &self.forward[self.pos_to_index(x, y)]
+    }
+    fn get_mut(&mut self, x: usize, y: usize) -> &mut Option<Entity> {
+        let i = self.pos_to_index(x, y);
+        &mut self.forward[i]
+    }
+    fn insert(&mut self, x: usize, y: usize, entity: Entity) -> Option<Entity> {
+        let mut e = Some(entity);
+        self.backward.insert(entity, self.pos_to_index(x, y));
+        std::mem::swap(self.get_mut(x, y), &mut e);
+        e
+    }
+
+    fn pos_to_index(&self, x: usize, y: usize) -> usize {
+        y * self.width + x
+    }
+}
+
+fn cell_to_pos(window: &Vec4, grid_size: &Vec2, cell: &BoardPosition) -> Vec2 {
     let x_step_per_cell = (window.y - window.w) / grid_size.x;
     let y_step_per_cell = (window.x - window.z) / grid_size.y;
 
     Vec2::new(
-        (x_step_per_cell * cell.x) + window.w,
-        (y_step_per_cell * cell.y) + window.z,
+        (x_step_per_cell * cell.x as f32) + window.w,
+        (y_step_per_cell * cell.y as f32) + window.z,
     )
 }
 
-fn spawn_system(windows: Res<Windows>, mut commands: Commands, asset_server: Res<AssetServer>) {
+fn spawn_system(windows: Res<Windows>, mut commands: Commands) {
     let window = windows.primary();
     let window_dimensions = Vec4::new(
         window.height() / 2.,
@@ -38,22 +80,18 @@ fn spawn_system(windows: Res<Windows>, mut commands: Commands, asset_server: Res
         (window_dimensions.y - window_dimensions.w) / (SCREEN_CELLS_FLOAT.0),
         (window_dimensions.x - window_dimensions.z) / (SCREEN_CELLS_FLOAT.1),
     );
-    //let texture = asset_server.load("textures/bounce.png");
+
     for x in 0..SCREEN_CELLS.0 {
         for y in 0..SCREEN_CELLS.1 {
-            let xint = x;
-            let yint = y;
-            let x = x as f32;
-            let y = y as f32;
-            let cell = Cell(Vec2::new(x, y));
+            let cell = BoardPosition(IVec2::new(x as i32, y as i32));
             let pos = cell_to_pos(
                 &window_dimensions,
                 &Vec2::new(SCREEN_CELLS_FLOAT.0, SCREEN_CELLS_FLOAT.1),
                 &cell,
             );
+
             commands
                 .spawn_bundle(SpriteBundle {
-                    //texture: texture.clone(),
                     sprite: Sprite {
                         color: Color::rgb(1., 1., 1.),
                         custom_size: Some(Vec2::new(cell_size.x, cell_size.y)),
@@ -68,14 +106,78 @@ fn spawn_system(windows: Res<Windows>, mut commands: Commands, asset_server: Res
                 })
                 .insert(cell)
                 .insert(Alive(
-                    (xint % 2 == 0 || yint % 2 == 0) && !(xint % 2 == 0 && yint % 2 == 0),
-                ));
+                    (x % 2 == 0 || y % 2 == 0) && !(x % 2 == 0 && y % 2 == 0),
+                ))
+                .insert(NextAlive(false));
         }
     }
 }
 
-fn color_system(pool: Res<ComputeTaskPool>, mut sprites: Query<(&Cell, &mut Sprite, &Alive)>) {
-    sprites.par_for_each_mut(&pool, 32, |(cell, mut sprite, alive)| {
+fn after_spawn(
+    tiles: Query<(Entity, &BoardPosition), Changed<BoardPosition>>,
+    mut board: ResMut<Board>,
+) {
+    dbg!(tiles.is_empty());
+    for (entity, tile) in tiles.iter() {
+        board.insert(tile.x as usize, tile.y as usize, entity);
+    }
+}
+
+fn update_next_state(
+    time: Res<Time>,
+    pool: Res<ComputeTaskPool>,
+    tiles: Query<&Alive>,
+    mut next_alives: Query<(&BoardPosition, &mut NextAlive)>,
+    board: Res<Board>,
+    mut timer: ResMut<CellTimer>,
+) -> bool {
+    //dbg!(&board);
+    if timer.tick(time.delta()).just_finished() {
+        next_alives.par_for_each_mut(&pool, 1, |(pos, mut next_alive)| {
+            let alives = ((pos.x - 1)..(pos.x + 1))
+                .zip((pos.y - 1)..(pos.y + 1))
+                .filter_map(|(x, y)| {
+                    let x = x.rem_euclid(board.width as i32);
+                    let y = y.rem_euclid(board.height as i32);
+                    board
+                        .get(x as usize, y as usize)
+                        .and_then(|e| tiles.get(e).ok())
+                })
+                .map(|a| {
+                    println!("{}", pos.0);
+                    a
+                })
+                .filter(|alive| ***alive)
+                .map(|a| {
+                    println!("{}", pos.0);
+                    a
+                })
+                .count();
+            next_alive.0 = (3..=5).contains(&alives);
+        });
+        true
+    } else {
+        false
+    }
+}
+
+fn after_next_state(
+    In(should_update): In<bool>,
+    pool: Res<ComputeTaskPool>,
+    mut tiles: Query<(&mut Alive, &NextAlive)>,
+) {
+    if should_update {
+        tiles.par_for_each_mut(&pool, 32, |(mut alive, next_alive)| {
+            alive.0 = next_alive.0;
+        });
+    }
+}
+
+fn update_colors(
+    pool: Res<ComputeTaskPool>,
+    mut tiles: Query<(&mut Sprite, &Alive), Changed<Alive>>,
+) {
+    tiles.par_for_each_mut(&pool, 32, |(mut sprite, alive)| {
         sprite.color = match alive.deref() {
             true => Color::rgb(1., 1., 1.),
             false => Color::rgb(0., 0., 0.),
@@ -83,60 +185,14 @@ fn color_system(pool: Res<ComputeTaskPool>, mut sprites: Query<(&Cell, &mut Spri
     });
 }
 
-fn move_system(pool: Res<ComputeTaskPool>, mut sprites: Query<(&mut Transform, &Velocity)>) {
-    sprites.par_for_each_mut(&pool, 32, |(mut transform, velocity)| {
-        transform.translation += velocity.extend(0.0);
-    });
-}
-
-fn bounce_system(
-    pool: Res<ComputeTaskPool>,
-    windows: Res<Windows>,
-    images: Res<Assets<Image>>,
-    mut sprites: Query<(&mut Transform, &mut Velocity, &Handle<Image>)>,
-) {
-    let window = windows.primary();
-    let width = window.width();
-    let height = window.height();
-    let left = width / -2.;
-    let right = width / 2.;
-    let bottom = height / -2.;
-    let top = height / 2.;
-    sprites.par_for_each_mut(&pool, 32, |(mut transform, mut v, handle)| {
-        let image = images.get(handle);
-        let (iwidth, iheight) = match image {
-            Some(i) => (
-                i.texture_descriptor.size.width as f32 * transform.scale.x,
-                i.texture_descriptor.size.height as f32 * transform.scale.y,
-            ),
-            None => (0., 0.),
-        };
-        if left > transform.translation.x - (iwidth / 2.) {
-            v.0.x = -v.0.x;
-            transform.translation.x = left + (iwidth / 2.);
-        } else if right < transform.translation.x + (iwidth / 2.) {
-            v.0.x = -v.0.x;
-            transform.translation.x = right - (iwidth / 2.);
-        } else if bottom > transform.translation.y - (iheight / 2.) {
-            v.0.y = -v.0.y;
-            transform.translation.y = bottom + (iheight / 2.);
-        } else if top < transform.translation.y + (iheight / 2.) {
-            v.0.y = -v.0.y;
-            transform.translation.y = top - (iheight / 2.);
-        }
-    });
-}
-
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .insert_resource(Board::new(SCREEN_CELLS.0, SCREEN_CELLS.1))
+        .insert_resource(CellTimer(Timer::from_seconds(0.5, true)))
         .add_startup_system(spawn_system)
-        .add_system(color_system)
-        //.add_system(move_system)
-        //.add_system(bounce_system)
+        .add_system(after_spawn)
+        .add_system(update_colors)
+        .add_system(update_next_state.chain(after_next_state))
         .run();
-}
-
-fn rand_range(start: f32, end: f32) -> f32 {
-    ((end - start) * random::<f32>()) + start
 }
