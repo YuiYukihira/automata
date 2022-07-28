@@ -1,6 +1,12 @@
 use std::ops::Deref;
 
-use bevy::{prelude::*, tasks::ComputeTaskPool, utils::HashMap};
+use bevy::{
+    asset::{AssetLoader, LoadedAsset},
+    prelude::*,
+    reflect::TypeUuid,
+    tasks::ComputeTaskPool,
+    utils::HashMap,
+};
 
 #[derive(Component, Deref, PartialEq)]
 struct BoardPosition(IVec2);
@@ -22,11 +28,8 @@ struct Board {
     height: usize,
 }
 
-static BOARD: [[bool; 7]; 3] = [
-    [false, true, false, false, false, false, false],
-    [false, false, false, true, false, false, false],
-    [true, true, false, false, true, true, true],
-];
+#[derive(Debug)]
+struct InitialBoard(Handle<StringAsset>, bool);
 
 impl Board {
     fn new(width: usize, height: usize) -> Self {
@@ -58,6 +61,10 @@ impl Board {
     fn resize(&mut self, x: usize, y: usize) {
         *self = Self::new(x, y)
     }
+
+    fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
 }
 
 fn cell_to_pos(
@@ -77,7 +84,12 @@ fn cell_to_pos(
     )
 }
 
-fn spawn_system(windows: Res<Windows>, mut board: ResMut<Board>, mut commands: Commands) {
+fn spawn_system(
+    windows: Res<Windows>,
+    mut board: ResMut<Board>,
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+) {
     let window = windows.primary();
     let window_dimensions = Vec4::new(
         window.height() / 2.,
@@ -101,10 +113,8 @@ fn spawn_system(windows: Res<Windows>, mut board: ResMut<Board>, mut commands: C
         cell_count
     );
 
-    let board_start_stop = (
-        ((cell_count.0 - 7) / 2, ((cell_count.0 - 7) / 2) + 6),
-        ((cell_count.1 - 3) / 2, ((cell_count.1 - 3) / 2) + 2),
-    );
+    let initial_board_file: Handle<StringAsset> = asset_server.load("board.txt");
+    commands.insert_resource(InitialBoard(initial_board_file, false));
 
     board.resize(cell_count.0, cell_count.1);
 
@@ -118,15 +128,7 @@ fn spawn_system(windows: Res<Windows>, mut board: ResMut<Board>, mut commands: C
                 &cell,
             );
 
-            let alive = if x >= board_start_stop.0 .0
-                && x <= board_start_stop.0 .1
-                && y >= board_start_stop.1 .0
-                && y <= board_start_stop.1 .1
-            {
-                BOARD[y - board_start_stop.1 .0][x - board_start_stop.0 .0]
-            } else {
-                false
-            };
+            let alive = false;
 
             let tile = commands
                 .spawn_bundle(SpriteBundle {
@@ -216,14 +218,95 @@ fn update_colors(
     });
 }
 
+fn intital_board_setup(
+    mut initital_board: ResMut<InitialBoard>,
+    board: Res<Board>,
+    mut tiles: Query<&mut Alive>,
+    assets: Res<Assets<StringAsset>>,
+) {
+    if initital_board.1 {
+        return;
+    }
+    let cell_count = board.size();
+
+    let initial_board_string = assets.get(&initital_board.0).unwrap();
+    println!("Initial Board:\n{}", initial_board_string.0);
+    let initial_board_data: Vec<Vec<bool>> = initial_board_string
+        .lines()
+        .map(|line| line.chars().map(|c| matches!(c, '■')).collect())
+        .collect();
+    let initial_board_dimensions = (
+        initial_board_string
+            .lines()
+            .fold(0, |acc, x| acc.max(x.chars().count())),
+        initial_board_string.lines().count(),
+    );
+
+    let board_offet = (
+        (cell_count.0 - initial_board_dimensions.0) / 2,
+        (cell_count.1 - initial_board_dimensions.1) / 2,
+    );
+
+    for (y, line) in initial_board_data.iter().enumerate() {
+        for (x, &is_set) in line.iter().enumerate() {
+            let maybe_tile = board.get(
+                x + board_offet.0,
+                (initial_board_dimensions.1 - y) + board_offet.1,
+            );
+            if let Some(tile) = maybe_tile {
+                let maybe_alive = tiles.get_mut(*tile);
+                if let Ok(mut alive) = maybe_alive {
+                    alive.0 = is_set;
+                }
+            }
+        }
+    }
+    initital_board.1 = true;
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
+        .add_plugin(TxtAssetPlugin)
         .insert_resource(Board::new(0, 0))
         .insert_resource(CellTimer(Timer::from_seconds(0.1, true)))
         .add_startup_system(spawn_system)
         //.add_startup_system(after_spawn.after(spawn_system))
+        .add_system(intital_board_setup)
         .add_system(update_colors)
         .add_system(update_next_state.chain(after_next_state))
         .run();
 }
+
+pub struct TxtAssetPlugin;
+
+impl Plugin for TxtAssetPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_asset::<StringAsset>()
+            .add_asset_loader(TxtAssetLoader);
+    }
+}
+
+struct TxtAssetLoader;
+
+impl AssetLoader for TxtAssetLoader {
+    fn load<'a>(
+        &'a self,
+        bytes: &'a [u8],
+        load_context: &'a mut bevy::asset::LoadContext,
+    ) -> bevy::asset::BoxedFuture<'a, Result<(), anyhow::Error>> {
+        Box::pin(async move {
+            let asset = String::from_utf8(bytes.to_vec())?;
+            load_context.set_default_asset(LoadedAsset::new(StringAsset(asset)));
+            Ok(())
+        })
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["txt"]
+    }
+}
+
+#[derive(TypeUuid, Deref)]
+#[uuid = "579f4885-5a11-46d3-a7e6-5528e254c836"]
+struct StringAsset(String);

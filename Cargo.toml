@@ -13,5 +13,6 @@ opt-level = 3
 
 
 [dependencies]
+anyhow = "1.0.58"
 bevy = { version = "0.7.0", features = ["dynamic"] }
 rand = "0.8.5"
