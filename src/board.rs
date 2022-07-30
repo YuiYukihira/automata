@@ -124,7 +124,6 @@ fn update_next_state(
     commands: Commands,
 ) {
     if timer.tick(time.delta()).just_finished() {
-        println!("alive_tiles: {}", alive_tiles.iter().count());
         // Get all the tiles we need to compute the state of,
         // This is all the currently alive tiles and thier neighbours.
         let positions_to_check = alive_tiles
@@ -210,61 +209,22 @@ fn update_next_state(
                 })
             }
         });
-
-        println!(
-            "new_aive_tiles: {}",
-            new_alive_tiles.load(std::sync::atomic::Ordering::Relaxed)
-        );
-        //true
-    } else {
-        //false
     }
 }
 
 type LivingTiles<'a, 'b> = Query<'a, 'b, Entity, (With<NextAlive>, With<Update>)>;
 type DeadTiles<'a, 'b> = Query<'a, 'b, Entity, (With<NextDie>, With<Update>)>;
 
-type StayAlive<'a, 'b> = Query<
-    'a,
-    'b,
-    Entity,
-    (
-        With<BoardPosition>,
-        With<Alive>,
-        With<NextAlive>,
-        With<Update>,
-    ),
->;
-type StayDead<'a, 'b> = Query<
-    'a,
-    'b,
-    Entity,
-    (
-        With<BoardPosition>,
-        Without<Alive>,
-        With<NextDie>,
-        With<Update>,
-    ),
->;
-
 fn after_next_state(
-    //In(should_update): In<bool>,
     pool: Res<ComputeTaskPool>,
     board: ResMut<Board>,
     tiles_to_live: LivingTiles,
     tiles_to_die: DeadTiles,
-    //    stay_alive: StayAlive,
-    //    stay_dead: StayDead,
     commands: Commands,
 ) {
-    //println!("should_update: {}", should_update);
     //if should_update {
     let commands = Arc::new(Mutex::new(commands));
     let board = Arc::new(Mutex::new(board));
-    println!("tiles_to_live: {:?}", tiles_to_live.iter().count());
-    println!("tiles_to_die: {:?}", tiles_to_die.iter().count());
-    //        println!("stay_alive: {:?}", stay_alive.iter().count());
-    //        println!("stay_dead: {:?}", stay_dead.iter().count());
     tiles_to_live.par_for_each(&pool, 32, |entity| {
         commands
             .lock()
@@ -285,38 +245,19 @@ fn after_next_state(
             .despawn();
         board.lock().unwrap().remove_entity(entity);
     });
-    // stay_alive.par_for_each(&pool, 32, |entity| {
-    //     commands
-    //         .lock()
-    //         .unwrap()
-    //         .entity(entity)
-    //         .remove::<Update>()
-    //         .remove::<NextAlive>();
-    // });
-    // stay_dead.par_for_each(&pool, 32, |entity| {
-    //     commands
-    //         .lock()
-    //         .unwrap()
-    //         .entity(entity)
-    //         .remove::<Update>()
-    //         .remove::<NextDie>();
-    // });
-    //}
-    //should_update
 }
 
 pub(crate) struct BoardPlugin;
 impl Plugin for BoardPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(GameTimer(Timer::from_seconds(0.1, true)))
+        app.insert_resource(GameTimer(Timer::from_seconds(0.02, true)))
             .insert_resource(GameRules::Conway)
             .insert_resource(Board::new(UVec2::splat(0)))
             .add_state(GamePlaying::Paused)
             .add_system_set(
                 SystemSet::on_update(GamePlaying::Playing)
                     .with_system(update_next_state)
-                    .with_system(after_next_state)
-                    .with_system(update_colors),
+                    .with_system(after_next_state),
             );
     }
 }

@@ -1,4 +1,11 @@
-use bevy::{prelude::*, tasks::ComputeTaskPool};
+use std::sync::{Arc, Mutex};
+
+use bevy::{
+    prelude::*,
+    tasks::ComputeTaskPool,
+    utils::{HashMap, HashSet},
+    window::WindowResized,
+};
 
 use crate::{
     board::{Board, Update},
@@ -83,11 +90,10 @@ pub fn update_colors(
     mut sprites: Query<(&mut Sprite, &TilePosition)>,
     board_tiles: Query<&Alive>,
 ) {
-    println!("board_tiles: {}", board_tiles.iter().count());
     if board_tiles.iter().count() == 0 {
         return;
     }
-    sprites.par_for_each_mut(&pool, 32, |(mut sprite, pos)| {
+    sprites.par_for_each_mut(&pool, 64, |(mut sprite, pos)| {
         let pos = IVec2::new(pos.0.x as i32, pos.0.y as i32);
         let board_pos = pos + view.iter().next().unwrap().offset;
         sprite.color = if let Some(entity) = board.get(board_pos) {
@@ -106,6 +112,7 @@ pub(crate) struct RenderPlugin;
 impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(RenderTimer(Timer::from_seconds(0.01, true)))
-            .add_startup_system(spawn_tiles);
+            .add_startup_system(spawn_tiles)
+            .add_system(update_colors);
     }
 }

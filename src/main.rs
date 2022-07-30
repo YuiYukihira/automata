@@ -2,7 +2,6 @@ use bevy::prelude::*;
 use board::{Alive, Board, BoardPosition, GamePlaying};
 use board_asset::BoardAsset;
 use hoverable::Hovering;
-use view::View;
 
 mod basic_setup;
 mod board;
@@ -14,8 +13,13 @@ mod view;
 #[derive(Debug)]
 struct InitialBoard(Handle<BoardAsset>, bool);
 
+#[derive(Debug)]
+struct PauseTimer(Timer, bool);
+
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    let initial_board_handle = asset_server.load("start.board");
+    let file = std::env::args().nth(1).unwrap();
+    println!("Loading: {}", file);
+    let initial_board_handle = asset_server.load(&file);
     commands.insert_resource(InitialBoard(initial_board_handle, false));
 }
 
@@ -81,13 +85,23 @@ fn board_click(
     }
 }
 
-fn switch_state(keyboard_input: Res<Input<KeyCode>>, mut game_state: ResMut<State<GamePlaying>>) {
-    if keyboard_input.just_pressed(KeyCode::Space) {
-        match game_state.current() {
-            GamePlaying::Paused => game_state.set(GamePlaying::Playing),
-            GamePlaying::Playing => game_state.set(GamePlaying::Paused),
+fn switch_state(
+    keyboard_input: Res<Input<KeyCode>>,
+    mut game_state: ResMut<State<GamePlaying>>,
+    mut timer: ResMut<PauseTimer>,
+    time: Res<Time>,
+) {
+    if !timer.1 {
+        if keyboard_input.just_pressed(KeyCode::Space) {
+            match game_state.current() {
+                GamePlaying::Paused => game_state.set(GamePlaying::Playing),
+                GamePlaying::Playing => game_state.set(GamePlaying::Paused),
+            }
+            .unwrap();
+            timer.1 = true;
         }
-        .unwrap();
+    } else if timer.0.tick(time.delta()).just_finished() {
+        timer.1 = false;
     }
 }
 
@@ -98,6 +112,7 @@ fn main() {
         .add_plugin(board::BoardPlugin)
         .add_plugin(render::RenderPlugin)
         .add_plugin(board_asset::BoardAssetPlugin)
+        .insert_resource(PauseTimer(Timer::from_seconds(0.2, true), false))
         //.add_startup_system(after_spawn.after(spawn_system))
         .add_system_set(SystemSet::on_enter(GamePlaying::Paused).with_system(intital_board_setup))
         .add_system_set(
