@@ -23,7 +23,7 @@ go ham. I've at least made it so computations are only done on alive tiles and t
 so you should see you PC slow down respective to that, not the size of the board.
 
 ## Presets
-The program supports [likewiki](https://conwaylife.com/wiki/Main_Page) standard files: `.rle` and `.cells`. And another basic one `.board` with you can see the format of in `acorn.board`.
+The program supports [lifewiki](https://conwaylife.com/wiki/Main_Page) standard files: `.rle` and `.cells`. And another basic one `.board` with you can see the format of in `acorn.board`.
 
 To add another preset, bung it in the assets directory and it should be usable.
 
